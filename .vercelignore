@@ -1,0 +1,27 @@
+# Ignore car images directory (too many files)
+car_images/
+
+# Ignore logs and debug files
+*.log
+debug_*.py
+
+# Ignore local development files
+api_service.py
+image_lookup.py
+car_scraper.py
+cloudinary_upload.py
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore system files
+.DS_Store
+*.swp
+*.swo
+
+# Ignore local env files
+.env
+.env.local
+
