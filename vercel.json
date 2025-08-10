@@ -1,19 +1,8 @@
 {
-  "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "api/main.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/image",
-      "dest": "/api/main"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/api/main"
+      "source": "/(.*)",
+      "destination": "/api/main"
     }
   ]
 }
