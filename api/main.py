@@ -67,7 +67,7 @@ def get_image(
 
     # Build model expression: match exact model tag OR model token in public_id
     model_token = norm(model)
-    model_expr = f'(tags="model:{model_token}" OR public_id="*{model_token}*")'
+    model_expr = f'(tags="model:{model_token}" OR public_id:*{model_token}*)'
 
     # 1) Exact brand+model+year
     expr_exact = f'tags="{b}" AND {model_expr} AND tags="{y}"'
