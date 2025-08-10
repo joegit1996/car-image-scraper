@@ -37,8 +37,7 @@ def get_image(
 ):
     """
     Get car image URL by brand, model, and year.
-    
-    Example: /image?brand=ford&model=focus&year=2020
+    Prioritizes brand+model. If exact year not available, returns closest available year for that brand+model.
     """
     # Validate Cloudinary config
     if not all([
@@ -50,19 +49,28 @@ def get_image(
             status_code=500, 
             detail="Cloudinary configuration missing. Please set environment variables."
         )
-    
-    # brand/year tags
+
+    def extract_year_from_tags(tags):
+        for t in tags or []:
+            if t.lower().startswith("year:"):
+                v = t.split(":", 1)[1]
+                if v.isdigit():
+                    try:
+                        return int(v)
+                    except ValueError:
+                        return None
+        return None
+
     b = f"brand:{norm(brand)}"
+    m = f"model:{norm(model)}"
     y = f"year:{norm(year)}"
-    model_token = norm(model)
 
-    # First: fetch candidates by brand+year only
-    expr = f'tags="{b}" AND tags="{y}"'
-
+    # 1) Exact brand+model+year
+    expr_exact = f'tags="{b}" AND tags="{m}" AND tags="{y}"'
     try:
-        results = (
+        exact = (
             Search()
-            .expression(expr)
+            .expression(expr_exact)
             .with_field("tags")
             .max_results(200)
             .sort_by("public_id", "desc")
@@ -71,48 +79,109 @@ def get_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    resources = results.get("resources", [])
-    if not resources:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"No image found for brand: {brand}, year: {year}"
+    exact_resources = exact.get("resources", [])
+    if exact_resources:
+        if fallback_first:
+            res = exact_resources[0]
+            return JSONResponse({
+                "url": res.get("secure_url"),
+                "public_id": res.get("public_id"),
+                "tags": res.get("tags", []),
+                "count": len(exact_resources),
+                "query": {"brand": brand, "model": model, "year": year},
+            })
+        return JSONResponse({
+            "results": [
+                {"url": r.get("secure_url"), "public_id": r.get("public_id"), "tags": r.get("tags", [])}
+                for r in exact_resources
+            ],
+            "count": len(exact_resources),
+            "query": {"brand": brand, "model": model, "year": year},
+        })
+
+    # 2) Brand+model; pick closest year
+    expr_bm = f'tags="{b}" AND tags="{m}"'
+    try:
+        bm = (
+            Search()
+            .expression(expr_bm)
+            .with_field("tags")
+            .max_results(200)
+            .sort_by("public_id", "desc")
+            .execute()
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    # Filter by model token in public_id or in tags that look like model:*
-    def matches(r) -> bool:
-        pid = r.get("public_id", "").lower()
-        if model_token and model_token in pid:
-            return True
-        tags = [t.lower() for t in r.get("tags", [])]
-        return any(t.startswith("model:") and model_token in t for t in tags)
+    bm_resources = bm.get("resources", [])
+    if not bm_resources:
+        # 3) Last resort: brand+year, then filter by model tokens
+        expr_by = f'tags="{b}" AND tags="{y}"
+        try:
+            by = (
+                Search()
+                .expression(expr_by)
+                .with_field("tags")
+                .max_results(200)
+                .sort_by("public_id", "desc")
+                .execute()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    filtered = [r for r in resources if matches(r)] or resources
+        resources = by.get("resources", [])
+        if not resources:
+            raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
-    if fallback_first:
+        model_token = norm(model)
+        def matches(r):
+            pid = r.get("public_id", "").lower()
+            if model_token and model_token in pid:
+                return True
+            tags = [t.lower() for t in r.get("tags", [])]
+            return any(t.startswith("model:") and model_token in t for t in tags)
+
+        filtered = [r for r in resources if matches(r)] or resources
         res = filtered[0]
         return JSONResponse({
             "url": res.get("secure_url"),
             "public_id": res.get("public_id"),
             "tags": res.get("tags", []),
             "count": len(filtered),
-            "query": {
-                "brand": brand,
-                "model": model, 
-                "year": year
-            }
+            "query": {"brand": brand, "model": model, "year": year},
         })
 
+    try:
+        requested_year = int(norm(year))
+    except ValueError:
+        requested_year = None
+
+    if requested_year is not None:
+        scored = []
+        for r in bm_resources:
+            yr = extract_year_from_tags(r.get("tags", []))
+            if yr is None:
+                continue
+            scored.append((abs(yr - requested_year), -yr, r))
+        if scored:
+            scored.sort(key=lambda t: (t[0], t[1]))
+            best = scored[0][2]
+            return JSONResponse({
+                "url": best.get("secure_url"),
+                "public_id": best.get("public_id"),
+                "tags": best.get("tags", []),
+                "count": len(bm_resources),
+                "query": {"brand": brand, "model": model, "year": year},
+            })
+
+    # If we cannot parse year or no year tags, return first brand+model match
+    res = bm_resources[0]
     return JSONResponse({
-        "results": [
-            {"url": r.get("secure_url"), "public_id": r.get("public_id"), "tags": r.get("tags", [])}
-            for r in filtered
-        ],
-        "count": len(filtered),
-        "query": {
-            "brand": brand,
-            "model": model,
-            "year": year
-        }
+        "url": res.get("secure_url"),
+        "public_id": res.get("public_id"),
+        "tags": res.get("tags", []),
+        "count": len(bm_resources),
+        "query": {"brand": brand, "model": model, "year": year},
     })
 
 
