@@ -1,0 +1,2 @@
+cloudinary==1.36.0
+fastapi==0.111.0

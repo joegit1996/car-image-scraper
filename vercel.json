@@ -1,8 +1,12 @@
 {
+  "version": 2,
   "builds": [
     {
       "src": "api/main.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": ["requirements.txt", "api/requirements.txt"]
+      }
     }
   ],
   "routes": [
