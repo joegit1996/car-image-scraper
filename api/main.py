@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import re
 from typing import Optional
@@ -8,6 +7,7 @@ from cloudinary import Search
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+
 # Configure Cloudinary with environment variables
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
@@ -16,7 +16,7 @@ cloudinary.config(
     secure=True,
 )
 
-app = FastAPI(title="Car Image API", version="1.2.0")
+app = FastAPI(title="Car Image API", version="1.3.0")
 
 
 def norm(s: str) -> str:
@@ -116,5 +116,9 @@ def get_image(
     })
 
 
-# This is required for Vercel
-handler = app
+@app.get("/test")
+def test():
+    return {"message": "API is working!", "status": "success"}
+
+
+
