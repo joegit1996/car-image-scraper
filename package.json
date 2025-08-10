@@ -1,0 +1,11 @@
+{
+  "name": "car-image-api",
+  "version": "1.0.0",
+  "description": "Car image API using Cloudinary and FastAPI",
+  "scripts": {
+    "dev": "uvicorn api.main:app --reload --port 3000",
+    "build": "echo 'Build completed'"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
