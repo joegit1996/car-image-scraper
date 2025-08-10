@@ -65,8 +65,12 @@ def get_image(
     m = f"model:{norm(model)}"
     y = f"year:{norm(year)}"
 
+    # Build model expression: match exact model tag OR model token in public_id
+    model_token = norm(model)
+    model_expr = f'(tags="model:{model_token}" OR public_id=*{model_token}*)'
+
     # 1) Exact brand+model+year
-    expr_exact = f'tags="{b}" AND tags="{m}" AND tags="{y}"'
+    expr_exact = f'tags="{b}" AND {model_expr} AND tags="{y}"'
     try:
         exact = (
             Search()
@@ -99,8 +103,8 @@ def get_image(
             "query": {"brand": brand, "model": model, "year": year},
         })
 
-    # 2) Brand-only search, then filter by model token; pick closest year
-    expr_b = f'tags="{b}"'
+    # 2) Brand+model across all years; pick closest year
+    expr_b = f'tags="{b}" AND {model_expr}'
     try:
         bres = (
             Search()
@@ -113,47 +117,9 @@ def get_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    resources = bres.get("resources", [])
-    if not resources:
-        raise HTTPException(status_code=404, detail=f"No image found for brand: {brand}")
-
-    model_token = norm(model)
-    def matches_model(r):
-        pid = r.get("public_id", "").lower()
-        if model_token and model_token in pid:
-            return True
-        tags_l = [t.lower() for t in r.get("tags", [])]
-        return any(t.startswith("model:") and model_token in t for t in tags_l)
-
-    model_filtered = [r for r in resources if matches_model(r)]
+    model_filtered = bres.get("resources", [])
     if not model_filtered:
-        # 3) Last resort: brand+year, filter by model token
-        expr_by = f'tags="{b}" AND tags="{y}"'
-        try:
-            by = (
-                Search()
-                .expression(expr_by)
-                .with_field("tags")
-                .max_results(200)
-                .sort_by("public_id", "desc")
-                .execute()
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
-
-        by_resources = by.get("resources", [])
-        if not by_resources:
-            raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
-
-        filtered = [r for r in by_resources if matches_model(r)] or by_resources
-        res = filtered[0]
-        return JSONResponse({
-            "url": res.get("secure_url"),
-            "public_id": res.get("public_id"),
-            "tags": res.get("tags", []),
-            "count": len(filtered),
-            "query": {"brand": brand, "model": model, "year": year},
-        })
+        raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
     # choose closest year among brand+model filtered
     try:
