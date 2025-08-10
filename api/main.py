@@ -65,12 +65,17 @@ def get_image(
     m = f"model:{norm(model)}"
     y = f"year:{norm(year)}"
 
-    # Build model expression: match exact model tag OR model token in public_id
+    # Helper: model match by tag or substring in public_id
     model_token = norm(model)
-    model_expr = f'(tags="model:{model_token}" OR public_id:*{model_token}*)'
+    def matches_model(r):
+        pid = r.get("public_id", "").lower()
+        if model_token and model_token in pid:
+            return True
+        tags_l = [t.lower() for t in r.get("tags", [])]
+        return any(t.startswith("model:") and model_token in t for t in tags_l)
 
-    # 1) Exact brand+model+year
-    expr_exact = f'tags="{b}" AND {model_expr} AND tags="{y}"'
+    # 1) Exact year within brand, then filter by model
+    expr_exact = f'tags="{b}" AND tags="{y}"'
     try:
         exact = (
             Search()
@@ -84,27 +89,28 @@ def get_image(
         raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
     exact_resources = exact.get("resources", [])
-    if exact_resources:
+    exact_filtered = [r for r in exact_resources if matches_model(r)]
+    if exact_filtered:
         if fallback_first:
-            res = exact_resources[0]
+            res = exact_filtered[0]
             return JSONResponse({
                 "url": res.get("secure_url"),
                 "public_id": res.get("public_id"),
                 "tags": res.get("tags", []),
-                "count": len(exact_resources),
+                "count": len(exact_filtered),
                 "query": {"brand": brand, "model": model, "year": year},
             })
         return JSONResponse({
             "results": [
                 {"url": r.get("secure_url"), "public_id": r.get("public_id"), "tags": r.get("tags", [])}
-                for r in exact_resources
+                for r in exact_filtered
             ],
-            "count": len(exact_resources),
+            "count": len(exact_filtered),
             "query": {"brand": brand, "model": model, "year": year},
         })
 
-    # 2) Brand+model across all years; pick closest year
-    expr_b = f'tags="{b}" AND {model_expr}'
+    # 2) Brand across all years; filter by model; pick closest year
+    expr_b = f'tags="{b}"'
     try:
         bres = (
             Search()
@@ -117,7 +123,7 @@ def get_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    model_filtered = bres.get("resources", [])
+    model_filtered = [r for r in bres.get("resources", []) if matches_model(r)]
     if not model_filtered:
         raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
