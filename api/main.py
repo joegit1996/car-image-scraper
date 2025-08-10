@@ -116,7 +116,7 @@ def get_image(
     bm_resources = bm.get("resources", [])
     if not bm_resources:
         # 3) Last resort: brand+year, then filter by model tokens
-        expr_by = f'tags="{b}" AND tags="{y}"
+        expr_by = f'tags="{b}" AND tags="{y}"'
         try:
             by = (
                 Search()
