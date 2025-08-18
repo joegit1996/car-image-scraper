@@ -74,6 +74,44 @@ def get_image(
         tags_l = [t.lower() for t in r.get("tags", [])]
         return any(t.startswith("model:") and model_token in t for t in tags_l)
 
+    # Paginated search for all resources under a brand and filter by model
+    def fetch_brand_model_matches(expr: str):
+        model_matches = []
+        cursor = None
+        safety_page_cap = 60  # cap to avoid unbounded loops
+        page_index = 0
+        while True:
+            s = (
+                Search()
+                .expression(expr)
+                .with_field("tags")
+                .max_results(200)
+                .sort_by("public_id", "desc")
+            )
+            if cursor:
+                try:
+                    s = s.next_cursor(cursor)  # type: ignore[attr-defined]
+                except Exception:
+                    # Older SDKs may not expose next_cursor as a builder; fall back to single page
+                    break
+            try:
+                page = s.execute()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
+
+            resources = page.get("resources", [])
+            if resources:
+                for res in resources:
+                    if matches_model(res):
+                        model_matches.append(res)
+
+            cursor = page.get("next_cursor")
+            page_index += 1
+            if not cursor or page_index >= safety_page_cap:
+                break
+
+        return model_matches
+
     # 1) Exact year within brand, then filter by model
     expr_exact = f'tags="{b}" AND tags="{y}"'
     try:
@@ -109,21 +147,9 @@ def get_image(
             "query": {"brand": brand, "model": model, "year": year},
         })
 
-    # 2) Brand across all years; filter by model; pick closest year
+    # 2) Brand across all years (paginated); filter by model; pick closest year
     expr_b = f'tags="{b}"'
-    try:
-        bres = (
-            Search()
-            .expression(expr_b)
-            .with_field("tags")
-            .max_results(200)
-            .sort_by("public_id", "desc")
-            .execute()
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
-
-    model_filtered = [r for r in bres.get("resources", []) if matches_model(r)]
+    model_filtered = fetch_brand_model_matches(expr_b)
     if not model_filtered:
         raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
