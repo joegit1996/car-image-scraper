@@ -1,6 +1,9 @@
 import os
 import re
 from typing import Optional, List
+from urllib.parse import quote
+
+import httpx
 
 import cloudinary
 from cloudinary import Search
@@ -32,7 +35,7 @@ BRAND_ALIASES = {
     "chevy": "chevrolet",
     "range-rover": "land-rover",
     "landrover": "land-rover",
-    "alfa": "alfa-romeo",
+    "alfa-romeo": "alfa",
     "bimmer": "bmw",
     "mini-cooper": "mini",
 }
@@ -66,6 +69,8 @@ def get_image(
     model: str = Query(..., description="Car model, e.g., Focus"),
     year: str = Query(..., description="Year, e.g., 2020"),
     fallback_first: bool = Query(True, description="Return first match if multiple"),
+    fallback_external: bool = Query(True, description="If true and no Cloudinary match, try external stock-like image search"),
+    provider: Optional[str] = Query(None, description="External provider to use when fallback_external=true (google|bing)"),
 ):
     """
     Get car image URL by brand, model, and year.
@@ -190,6 +195,118 @@ def get_image(
         if model_filtered:
             break
     if not model_filtered:
+        # Optional external fallback to retrieve a stock-like image
+        if fallback_external:
+            cloud = os.environ.get("CLOUDINARY_CLOUD_NAME")
+            if not cloud:
+                raise HTTPException(status_code=500, detail="CLOUDINARY_CLOUD_NAME missing for fetch delivery URL")
+
+            def build_fetch_url(remote_url: str):
+                # Add basic transforms for consistent delivery
+                # e.g., f_auto,q_auto,w_1600,c_fit
+                return f"https://res.cloudinary.com/{cloud}/image/fetch/f_auto,q_auto,w_1600,c_fit/{quote(remote_url, safe='')}"
+
+            # Build a simple query using brand, model, and year only
+            q = f"{brand} {model} {year}"
+
+            prov = (provider or "google").lower()
+            items = []
+            if prov == "google":
+                g_key = os.environ.get("GOOGLE_CSE_KEY")
+                g_cx = os.environ.get("GOOGLE_CSE_CX")
+                if not g_key or not g_cx:
+                    raise HTTPException(status_code=404, detail="No image found in Cloudinary and Google CSE credentials missing (set GOOGLE_CSE_KEY and GOOGLE_CSE_CX)")
+                try:
+                    with httpx.Client(timeout=10.0) as client:
+                        resp = client.get(
+                            "https://www.googleapis.com/customsearch/v1",
+                            params={
+                                "key": g_key,
+                                "cx": g_cx,
+                                "q": q,
+                                "searchType": "image",
+                                "safe": "active",
+                                "imgType": "photo",
+                                "num": 10,
+                                "orTerms": "wikipedia",
+                                "excludeTerms": "ytimg",
+                            },
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                        items = data.get("items", [])
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"External search (google) failed: {str(e)}")
+
+                # Always take the first result from Google
+                candidate_url = None
+                if items:
+                    candidate_url = items[0].get("link")
+                    if not candidate_url:
+                        # fallback: first item with a link
+                        for it in items:
+                            if it.get("link"):
+                                candidate_url = it.get("link")
+                                break
+                if candidate_url:
+                    fetch_url = build_fetch_url(candidate_url)
+                    return JSONResponse({
+                        "url": fetch_url,
+                        "external": True,
+                        "source": "google",
+                        "origin_url": candidate_url,
+                        "query": {"brand": brand, "model": model, "year": year},
+                        "note": "External stock-like image used; ensure licensing before production use",
+                    })
+            else:
+                # Default to Bing
+                bing_key = os.environ.get("BING_IMAGE_KEY")
+                if not bing_key:
+                    raise HTTPException(status_code=404, detail="No image found in Cloudinary and external search key is missing (set BING_IMAGE_KEY)")
+                try:
+                    with httpx.Client(timeout=10.0) as client:
+                        resp = client.get(
+                            "https://api.bing.microsoft.com/v7.0/images/search",
+                            headers={"Ocp-Apim-Subscription-Key": bing_key},
+                            params={
+                                "q": q,
+                                "safeSearch": "Strict",
+                                "imageType": "Photo",
+                                "count": 20,
+                                "size": "Large",
+                            },
+                        )
+                        resp.raise_for_status()
+                        items = resp.json().get("value", [])
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"External search (bing) failed: {str(e)}")
+
+                # Always take the first result from Bing
+                chosen_url = None
+                if items:
+                    chosen_url = items[0].get("contentUrl")
+                    if not chosen_url:
+                        # fallback: first item with a contentUrl
+                        for it in items:
+                            if it.get("contentUrl"):
+                                chosen_url = it.get("contentUrl")
+                                break
+                if chosen_url:
+                    remote_url = chosen_url
+                    fetch_url = build_fetch_url(remote_url)
+                    return JSONResponse({
+                        "url": fetch_url,
+                        "external": True,
+                        "source": "bing",
+                        "origin_url": remote_url,
+                        "query": {"brand": brand, "model": model, "year": year},
+                        "note": "External stock-like image used; ensure licensing before production use",
+                    })
+
+            # If we reach here, no suitable candidate from chosen provider
+            raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model} (external search yielded no suitable photo)")
+
+        # External fallback disabled: return 404
         raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
     # choose closest year among brand+model filtered

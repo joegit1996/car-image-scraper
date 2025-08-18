@@ -61,3 +61,4 @@ curl "https://your-project.vercel.app/image?brand=ford&model=focus&year=2020"
 - The API runs as serverless functions (cold starts ~1-2s)
 - All routes are handled by `/api/main.py`
 - Environment variables must be set in Vercel dashboard for production
+
