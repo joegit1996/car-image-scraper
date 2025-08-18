@@ -1,6 +1,6 @@
 import os
 import re
-from typing import Optional
+from typing import Optional, List
 
 import cloudinary
 from cloudinary import Search
@@ -21,6 +21,38 @@ app = FastAPI(title="Car Image API", version="1.3.0")
 
 def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+# Common brand aliases → canonical slug used in Cloudinary brand tags
+# Extend as needed
+BRAND_ALIASES = {
+    "mercedes": "mercedes-benz",
+    "merc": "mercedes-benz",
+    "benz": "mercedes-benz",
+    "vw": "volkswagen",
+    "chevy": "chevrolet",
+    "range-rover": "land-rover",
+    "landrover": "land-rover",
+    "alfa": "alfa-romeo",
+    "bimmer": "bmw",
+    "mini-cooper": "mini",
+}
+
+def brand_candidates(brand: str) -> List[str]:
+    slug = norm(brand)
+    candidates: List[str] = []
+    alias = BRAND_ALIASES.get(slug)
+    if alias and alias != slug:
+        candidates.append(alias)
+    # Try original normalized brand
+    candidates.append(slug)
+    # Deduplicate while preserving order
+    seen = set()
+    unique: List[str] = []
+    for c in candidates:
+        if c not in seen:
+            unique.append(c)
+            seen.add(c)
+    return unique
 
 
 @app.get("/")
@@ -61,7 +93,7 @@ def get_image(
                         return None
         return None
 
-    b = f"brand:{norm(brand)}"
+    brand_slugs = brand_candidates(brand)
     m = f"model:{norm(model)}"
     y = f"year:{norm(year)}"
 
@@ -112,44 +144,51 @@ def get_image(
 
         return model_matches
 
-    # 1) Exact year within brand, then filter by model
-    expr_exact = f'tags="{b}" AND tags="{y}"'
-    try:
-        exact = (
-            Search()
-            .expression(expr_exact)
-            .with_field("tags")
-            .max_results(200)
-            .sort_by("public_id", "desc")
-            .execute()
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
+    # 1) Exact year within brand candidates, then filter by model
+    for bslug in brand_slugs:
+        b = f"brand:{bslug}"
+        expr_exact = f'tags="{b}" AND tags="{y}"'
+        try:
+            exact = (
+                Search()
+                .expression(expr_exact)
+                .with_field("tags")
+                .max_results(200)
+                .sort_by("public_id", "desc")
+                .execute()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Cloudinary search error: {str(e)}")
 
-    exact_resources = exact.get("resources", [])
-    exact_filtered = [r for r in exact_resources if matches_model(r)]
-    if exact_filtered:
-        if fallback_first:
-            res = exact_filtered[0]
+        exact_resources = exact.get("resources", [])
+        exact_filtered = [r for r in exact_resources if matches_model(r)]
+        if exact_filtered:
+            if fallback_first:
+                res = exact_filtered[0]
+                return JSONResponse({
+                    "url": res.get("secure_url"),
+                    "public_id": res.get("public_id"),
+                    "tags": res.get("tags", []),
+                    "count": len(exact_filtered),
+                    "query": {"brand": brand, "model": model, "year": year},
+                })
             return JSONResponse({
-                "url": res.get("secure_url"),
-                "public_id": res.get("public_id"),
-                "tags": res.get("tags", []),
+                "results": [
+                    {"url": r.get("secure_url"), "public_id": r.get("public_id"), "tags": r.get("tags", [])}
+                    for r in exact_filtered
+                ],
                 "count": len(exact_filtered),
                 "query": {"brand": brand, "model": model, "year": year},
             })
-        return JSONResponse({
-            "results": [
-                {"url": r.get("secure_url"), "public_id": r.get("public_id"), "tags": r.get("tags", [])}
-                for r in exact_filtered
-            ],
-            "count": len(exact_filtered),
-            "query": {"brand": brand, "model": model, "year": year},
-        })
 
     # 2) Brand across all years (paginated); filter by model; pick closest year
-    expr_b = f'tags="{b}"'
-    model_filtered = fetch_brand_model_matches(expr_b)
+    model_filtered = []
+    for bslug in brand_slugs:
+        b = f'brand:{bslug}'
+        expr_b = f'tags="{b}"'
+        model_filtered = fetch_brand_model_matches(expr_b)
+        if model_filtered:
+            break
     if not model_filtered:
         raise HTTPException(status_code=404, detail=f"No image found for brand/model: {brand} {model}")
 
